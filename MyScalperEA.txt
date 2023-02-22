@@ -1,0 +1,196 @@
+Code sau khi backtest bị lỗi 
+1. OrderClose failed with error #4051
+2. OrderSend error 131
+3. OrderSend failed with error #131
+4. invalid ticket for OrderClose function
+Đoạn code EA cần kiểm tra như sau:
+//+------------------------------------------------------------------+
+//| MyScalperEA |
+//| Copyright 2023, ChatGPT AI |
+//| https://www.chatgpt.com/ai |
+//+------------------------------------------------------------------+
+
+//#include <MT4Orders.mqh>
+
+// Input parameters
+extern double TakeProfit = 20;
+extern double StopLoss = 10;
+extern double LotSize = 0.01;
+extern double RiskPercentage = 0.1;
+extern int MagicNumber = 12345;
+extern int Slippage = 5;
+extern int MaxTrades = 2;
+extern double NewStopLoss = 15;
+extern double NewTakeProfit = 30;
+extern int TakeProfitInPips = 10;
+extern int StopLossInPips = 5;
+extern int MaxSpreadInPips = 2;
+
+int slippage = 3;
+int magicNumber = 1234;
+int orderCount = 0;
+int totalOrders = 10;
+int signalBarCount = 0;
+double lastSignalPrice = 0.0;
+double minLotSize = 0.01;
+double maxLotSize = 1.0;
+double lotSize = 0.0;
+double stopLoss = 0.0;
+double takeProfit = 0.0;
+double balance = 0.0;
+
+// Global variables
+int trendUp[];
+int trendDown[];
+double support[];
+double resistance[];
+int lastKiss = -1;
+int tradesOpened = 0;
+datetime lastTradeTime;
+bool hasTrade = false;
+
+// Custom function to detect kiss of death/birth pattern
+bool isKiss(int direction)
+{
+bool result = false;
+if (direction == 1)
+{
+// check for kiss of birth pattern
+if (High[0] < Low[1])
+{
+result = true;
+}
+}
+else if (direction == -1)
+{
+// check for kiss of death pattern
+if (Low[0] > High[1])
+{
+result = true;
+}
+}
+return result;
+}
+
+// Custom function to check for open trades
+int getOpenTrades()
+{
+int count = 0;
+for (int i = 0; i < OrdersTotal(); i++)
+{
+if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+{
+if (OrderType() == OP_BUY || OrderType() == OP_SELL)
+{
+count++;
+}
+}
+}
+return count;
+}
+
+// Custom function to calculate lot size based on risk percentage
+double CalculateLotSize()
+{
+double accountBalance = AccountBalance();
+double riskPercentage = RiskPercentage / 100.0;
+double stopLossPips = StopLoss * Point;
+double lotSize = NormalizeDouble((accountBalance * riskPercentage) / (stopLossPips * MarketInfo(Symbol(), MODE_TICKVALUE)), 2);
+return lotSize;
+}
+// Custom function to update stop loss and take profit of an open trade
+bool UpdateOrder(int ticket, double newStopLoss, double newTakeProfit)
+{
+bool result = false;
+if (OrderSelect(ticket, SELECT_BY_TICKET))
+{
+if (OrderType() == OP_BUY)
+{
+result = OrderModify(ticket, OrderOpenPrice(), newStopLoss, newTakeProfit, 0, Blue);
+}
+else if (OrderType() == OP_SELL)
+{
+result = OrderModify(ticket, OrderOpenPrice(), newTakeProfit, newStopLoss, 0, Blue);
+}
+if (!result)
+{
+Print("OrderModify failed with error #", GetLastError());
+}
+// EA main function
+void OnTick()
+{
+double lot = CalculateLotSize();
+// Check for open trades
+tradesOpened = getOpenTrades();
+if (tradesOpened > 0)
+{
+hasTrade = true;
+}
+// Limit trades per session
+int tradesThisSession = 0;
+// Get trend direction
+int direction = 0;
+if (iMA(NULL, 0, 50, 0, MODE_SMA, PRICE_CLOSE, 0) > iMA(NULL, 0, 200, 0, MODE_SMA, PRICE_CLOSE, 0))
+{
+    direction = 1; // upward trend
+}
+else if (iMA(NULL, 0, 50, 0, MODE_SMA, PRICE_CLOSE, 0) < iMA(NULL, 0, 200, 0, MODE_SMA, PRICE_CLOSE, 0))
+{
+    direction = -1; // downward trend
+}
+
+// Check for kiss of death/birth pattern
+bool isKissPattern = isKiss(direction);
+
+// Place trades based on conditions
+if (direction == 1 && isKissPattern && tradesOpened < MaxTrades && tradesThisSession < MaxTrades && !hasTrade)
+{
+    // Calculate lot size
+    double lotSize = CalculateLotSize();
+
+    // Calculate stop loss and take profit
+    double stopLoss = NormalizeDouble(Bid - (StopLossInPips * Point), Digits);
+    double takeProfit = NormalizeDouble(Bid + (TakeProfitInPips * Point), Digits);
+
+    // Open order
+    int ticket = OrderSend(Symbol(), OP_BUY, lotSize, Ask, Slippage, stopLoss, takeProfit, "Buy order", MagicNumber, 0, Green);
+    if (ticket == -1) {
+        Print("OrderSend failed with error #", GetLastError());
+    } else {
+        Print("Buy order opened with ticket #", ticket);
+    }
+
+    // Close order after 1 minute
+    Sleep(60 * 1000);
+    bool orderClosed = OrderClose(ticket, lotSize, Bid, Slippage, Red);
+    if (!orderClosed) {
+        Print("OrderClose failed with error #", GetLastError());
+    } else {
+        Print("Buy order closed with ticket #", ticket);
+    }
+}
+else if (direction == -1 && isKissPattern && tradesOpened < MaxTrades && tradesThisSession < MaxTrades && !hasTrade)
+{
+    // Calculate lot size
+    double lotSize = CalculateLotSize();
+
+    // Calculate stop loss and take profit
+    double stopLoss = NormalizeDouble(Ask + (StopLossInPips * Point), Digits);
+    double takeProfit = NormalizeDouble(Ask - (TakeProfitInPips * Point), Digits);
+
+    // Open order
+    int ticket = OrderSend(Symbol(), OP_SELL, lotSize, Bid, Slippage, stopLoss, takeProfit, "Sell order", MagicNumber, 0, Red);
+    if (ticket == -1) {
+        Print("OrderSend failed with error #", GetLastError());
+    } else {
+        Print("Sell order opened with ticket #", ticket);
+    }
+
+    // Close order after 1 minute
+    Sleep(60 * 1000);
+    bool orderClosed = OrderClose(ticket, lotSize, Ask, Slippage, Green);
+    if (!orderClosed) {
+        Print("OrderClose failed with error #", GetLastError());
+    } else {
+        Print("Sell order closed with ticket #", ticket);
+    }
