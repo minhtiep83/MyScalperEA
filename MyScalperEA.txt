@@ -1,16 +1,9 @@
-Code sau khi backtest bị lỗi 
-1. OrderClose failed with error #4051
-2. OrderSend error 131
-3. OrderSend failed with error #131
-4. invalid ticket for OrderClose function
-Đoạn code EA cần kiểm tra như sau:
+Tiếp tục phần viết code cho EA MyScalperEA:
 //+------------------------------------------------------------------+
 //| MyScalperEA |
 //| Copyright 2023, ChatGPT AI |
 //| https://www.chatgpt.com/ai |
 //+------------------------------------------------------------------+
-
-//#include <MT4Orders.mqh>
 
 // Input parameters
 extern double TakeProfit = 20;
@@ -25,19 +18,6 @@ extern double NewTakeProfit = 30;
 extern int TakeProfitInPips = 10;
 extern int StopLossInPips = 5;
 extern int MaxSpreadInPips = 2;
-
-int slippage = 3;
-int magicNumber = 1234;
-int orderCount = 0;
-int totalOrders = 10;
-int signalBarCount = 0;
-double lastSignalPrice = 0.0;
-double minLotSize = 0.01;
-double maxLotSize = 1.0;
-double lotSize = 0.0;
-double stopLoss = 0.0;
-double takeProfit = 0.0;
-double balance = 0.0;
 
 // Global variables
 int trendUp[];
@@ -90,16 +70,19 @@ return count;
 }
 
 // Custom function to calculate lot size based on risk percentage
-double CalculateLotSize()
+double calculateLotSize()
 {
 double accountBalance = AccountBalance();
 double riskPercentage = RiskPercentage / 100.0;
-double stopLossPips = StopLoss * Point;
+double stopLossPips = StopLossInPips;
 double lotSize = NormalizeDouble((accountBalance * riskPercentage) / (stopLossPips * MarketInfo(Symbol(), MODE_TICKVALUE)), 2);
+if (lotSize < LotSize) lotSize = LotSize; // ensure minimum lot size is used
+if (lotSize > 1.0) lotSize = 1.0; // ensure maximum lot size is used
 return lotSize;
 }
+
 // Custom function to update stop loss and take profit of an open trade
-bool UpdateOrder(int ticket, double newStopLoss, double newTakeProfit)
+bool updateOrder(int ticket, double newStopLoss, double newTakeProfit)
 {
 bool result = false;
 if (OrderSelect(ticket, SELECT_BY_TICKET))
@@ -116,81 +99,670 @@ if (!result)
 {
 Print("OrderModify failed with error #", GetLastError());
 }
+}
+return result;
+}
+
 // EA main function
 void OnTick()
 {
-double lot = CalculateLotSize();
-// Check for open trades
-tradesOpened = getOpenTrades();
-if (tradesOpened > 0)
+int maxTradesPerSession = MaxTrades;
+// Check if there is an open trade
+hasTrade = (getOpenTrades() > 0);
+
+// Check if we can open new trades
+if (!hasTrade || (tradesOpened < maxTradesPerSession && TimeCurrent() - lastTradeTime >= 60000))
 {
-hasTrade = true;
+// Determine trend direction
+int trend = 0;
+if (Close[1] > Open[1])
+{
+trend = 1;
 }
-// Limit trades per session
-int tradesThisSession = 0;
-// Get trend direction
-int direction = 0;
-if (iMA(NULL, 0, 50, 0, MODE_SMA, PRICE_CLOSE, 0) > iMA(NULL, 0, 200, 0, MODE_SMA, PRICE_CLOSE, 0))
+else if (Close[1] < Open[1])
 {
-    direction = 1; // upward trend
-}
-else if (iMA(NULL, 0, 50, 0, MODE_SMA, PRICE_CLOSE, 0) < iMA(NULL, 0, 200, 0, MODE_SMA, PRICE_CLOSE, 0))
-{
-    direction = -1; // downward trend
+trend = -1;
 }
 
 // Check for kiss of death/birth pattern
-bool isKissPattern = isKiss(direction);
-
-// Place trades based on conditions
-if (direction == 1 && isKissPattern && tradesOpened < MaxTrades && tradesThisSession < MaxTrades && !hasTrade)
+if (isKiss(trend))
 {
-    // Calculate lot size
-    double lotSize = CalculateLotSize();
+// Calculate lot size based on risk percentage
+double lotSize = calculateLotSize();
 
-    // Calculate stop loss and take profit
-    double stopLoss = NormalizeDouble(Bid - (StopLossInPips * Point), Digits);
-    double takeProfit = NormalizeDouble(Bid + (TakeProfitInPips * Point), Digits);
-
-    // Open order
-    int ticket = OrderSend(Symbol(), OP_BUY, lotSize, Ask, Slippage, stopLoss, takeProfit, "Buy order", MagicNumber, 0, Green);
-    if (ticket == -1) {
-        Print("OrderSend failed with error #", GetLastError());
-    } else {
-        Print("Buy order opened with ticket #", ticket);
-    }
-
-    // Close order after 1 minute
-    Sleep(60 * 1000);
-    bool orderClosed = OrderClose(ticket, lotSize, Bid, Slippage, Red);
-    if (!orderClosed) {
-        Print("OrderClose failed with error #", GetLastError());
-    } else {
-        Print("Buy order closed with ticket #", ticket);
-    }
+// Determine entry price and stop loss based on kiss pattern
+double entryPrice = 0;
+double stopLoss = 0;
+if (trend == 1)
+{
+entryPrice = High[1] + (Ask - Bid) * 0.1;
+stopLoss = entryPrice - StopLossInPips * Point;
 }
-else if (direction == -1 && isKissPattern && tradesOpened < MaxTrades && tradesThisSession < MaxTrades && !hasTrade)
+else if (trend == -1)
 {
-    // Calculate lot size
-    double lotSize = CalculateLotSize();
+entryPrice = Low[1] - (Ask - Bid) * 0.1;
+stopLoss = entryPrice + StopLossInPips * Point;
+}
 
-    // Calculate stop loss and take profit
-    double stopLoss = NormalizeDouble(Ask + (StopLossInPips * Point), Digits);
-    double takeProfit = NormalizeDouble(Ask - (TakeProfitInPips * Point), Digits);
+// Determine take profit based on input parameters
+double takeProfit = 0;
+if (TakeProfitInPips > 0)
+{
+takeProfit = entryPrice + TakeProfitInPips * Point;
+}
+else
+{
+takeProfit = entryPrice + TakeProfit * Point;
+}
 
-    // Open order
-    int ticket = OrderSend(Symbol(), OP_SELL, lotSize, Bid, Slippage, stopLoss, takeProfit, "Sell order", MagicNumber, 0, Red);
-    if (ticket == -1) {
-        Print("OrderSend failed with error #", GetLastError());
-    } else {
-        Print("Sell order opened with ticket #", ticket);
-    }
+// Check if entry price is within max spread
+if (Ask - entryPrice <= MaxSpreadInPips * Point || entryPrice - Bid <= MaxSpreadInPips * Point)
+{
+// Place order
+int ticket = 0;
+if (trend == 1)
+{
+ticket = OrderSend(Symbol(), OP_BUY, lotSize, entryPrice, Slippage, stopLoss, takeProfit, "MyScalperEA", MagicNumber, 0, Green);
+}
+else if (trend == -1)
+{
+ticket = OrderSend(Symbol(), OP_SELL, lotSize, entryPrice, Slippage, stopLoss, takeProfit, "MyScalperEA", MagicNumber, 0, Red);
+}
+if (ticket > 0)
+{
+Print("Order placed successfully with ticket #", ticket);
+tradesOpened++;
+lastTradeTime = TimeCurrent();
+}
+else
+{
+Print("OrderSend failed with error #", GetLastError());
+}
+}
+else
+{
+Print("Entry price outside of max spread, order not placed.");
+}
+}
+}
 
-    // Close order after 1 minute
-    Sleep(60 * 1000);
-    bool orderClosed = OrderClose(ticket, lotSize, Ask, Slippage, Green);
-    if (!orderClosed) {
-        Print("OrderClose failed with error #", GetLastError());
-    } else {
-        Print("Sell order closed with ticket #", ticket);
-    }
+// Check for existing trades to update stop loss and take profit
+if (hasTrade)
+{
+for (int i = 0; i < OrdersTotal(); i++)
+{
+if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+{
+if (OrderType() == OP_BUY || OrderType() == OP_SELL)
+{
+// Check if order is in profit
+double profit = OrderProfit();
+if (profit > 0)
+{
+// Check if price has reached take profit level
+double takeProfit = OrderTakeProfit();
+if (OrderType() == OP_BUY && Bid >= takeProfit || OrderType() == OP_SELL && Ask <= takeProfit)
+{
+// Update stop loss and take profit
+if (updateOrder(OrderTicket(), OrderStopLoss(), NewTakeProfit))
+{
+Print("Order #", OrderTicket(), " take profit updated to ", NewTakeProfit);
+}
+}
+}
+else
+{
+// Check if price has moved against us and update stop loss
+if (!hasTrade)
+{
+lastTradeTime = TimeCurrent();
+}
+
+// Update stop loss and take profit of open trades
+for (int i = 0; i < OrdersTotal(); i++)
+{
+if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+{
+if (OrderType() == OP_BUY || OrderType() == OP_SELL)
+{
+double tradeStopLoss = OrderStopLoss();
+double tradeTakeProfit = OrderTakeProfit();
+double tradeOpenPrice = OrderOpenPrice();
+double tradeProfit = OrderProfit();
+int tradeMagicNumber = OrderMagicNumber();
+
+// Check if trade is in profit
+if (tradeProfit > 0)
+{
+// Update stop loss to breakeven
+if (tradeStopLoss < tradeOpenPrice)
+{
+double newStopLoss = tradeOpenPrice;
+if (OrderType() == OP_BUY)
+{
+newStopLoss += (tradeStopLoss - tradeOpenPrice);
+}
+else if (OrderType() == OP_SELL)
+{
+newStopLoss -= (tradeOpenPrice - tradeStopLoss);
+}
+bool result = updateOrder(OrderTicket(), newStopLoss, tradeTakeProfit);
+if (result)
+{
+Print("Stop loss updated to breakeven for order #", OrderTicket());
+}
+}
+}
+
+// Check if take profit is within reach
+if (OrderType() == OP_BUY && tradeTakeProfit > tradeOpenPrice + TakeProfitInPips * Point ||
+OrderType() == OP_SELL && tradeTakeProfit < tradeOpenPrice - TakeProfitInPips * Point)
+{
+// Update take profit to new take profit
+double newTakeProfit = 0;
+if (OrderType() == OP_BUY)
+{
+newTakeProfit = tradeOpenPrice + NewTakeProfit * Point;
+}
+else if (OrderType() == OP_SELL)
+{
+newTakeProfit = tradeOpenPrice - NewTakeProfit * Point;
+}
+bool result = updateOrder(OrderTicket(), tradeStopLoss, newTakeProfit);
+if (result)
+{
+Print("Take profit updated for order #", OrderTicket());
+}
+}
+
+// Check if stop loss is hit
+if (OrderType() == OP_BUY && Bid <= tradeStopLoss ||
+OrderType() == OP_SELL && Ask >= tradeStopLoss)
+{
+bool result = OrderClose(OrderTicket(), OrderLots(), Bid, Slippage, Red);
+if (result)
+{
+Print("Stop loss hit for order #", OrderTicket());
+tradesOpened--;
+}
+}
+
+// Check if take profit is hit
+if (OrderType() == OP_BUY && Ask >= tradeTakeProfit ||
+OrderType() == OP_SELL && Bid <= tradeTakeProfit)
+{
+bool result = OrderClose(OrderTicket(), OrderLots(), Bid, Slippage, Green);
+if (result)
+{
+Print("Take profit hit for order #", OrderTicket());
+tradesOpened--;
+}
+}
+}
+}
+}
+}
+}
+
+// Custom function to draw support and resistance levels
+void drawSupportResistance()
+{
+// Calculate support and resistance levels
+int shift = 0;
+int bars = 240;
+double high, low;
+ArrayResize(support, bars);
+ArrayResize(resistance, bars);
+int supportCount = 0;
+int resistanceCount = 0;
+for (int i = 0; i < bars; i++)
+{
+high = High[iHighest(NULL, 0, MODE_HIGH, 20, i + 1)];
+low = Low[iLowest(NULL, 0, MODE_LOW, 20, i + 1)];
+if (high - low >= 0.0010)
+{
+double pivot = (high + low + Close[i]) / 3;
+double r1 = 2 * pivot - low;
+double s1 = 2 * pivot
+// Update last trade time
+lastTradeTime = TimeCurrent();
+}
+else
+{
+Print("OrderSend failed with error #", GetLastError());
+}
+}
+}
+
+// Update stop loss and take profit of open trades based on input parameters
+for (int i = 0; i < OrdersTotal(); i++)
+{
+if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+{
+if (OrderType() == OP_BUY || OrderType() == OP_SELL)
+{
+// Check if trade is profitable and has moved beyond take profit threshold
+double currentProfit = OrderProfit() + OrderCommission() + OrderSwap();
+if (currentProfit >= TakeProfitInPips * Point)
+{
+// Update take profit to new value
+double newTakeProfit = OrderOpenPrice() + NewTakeProfit * Point;
+updateOrder(OrderTicket(), OrderStopLoss(), newTakeProfit);
+}
+// Check if trade has moved against us and hit stop loss threshold
+else if (currentProfit <= -StopLossInPips * Point)
+{
+// Update stop loss to new value
+double newStopLoss = OrderOpenPrice() + NewStopLoss * Point;
+updateOrder(OrderTicket(), newStopLoss, OrderTakeProfit());
+}
+}
+}
+}
+
+// Check for support and resistance levels
+int limit = 100;
+int counted_bars = IndicatorCounted();
+if (counted_bars < 0) return (-1);
+if (counted_bars > 0) counted_bars--;
+int pos = Bars - counted_bars - 1;
+for (int i = pos; i >= 0 && i >= pos - limit; i--)
+{
+trendUp[i] = trendDown[i] = 0;
+support[i] = iCustom(NULL, 0, "mySupportResistance", 0, 0, i);
+resistance[i] = iCustom(NULL, 0, "mySupportResistance", 1, 0, i);
+if (i < pos - 1)
+{
+if (resistance[i] > resistance[i + 1])
+{
+trendUp[i] = 1;
+}
+else if (support[i] < support[i + 1])
+{
+trendDown[i] = 1;
+}
+}
+
+// Check for new kiss of death/birth pattern
+if (trendUp[i] == 1 && lastKiss != 1)
+{
+if (isKiss(1))
+{
+lastKiss = 1;
+}
+}
+else if (trendDown[i] == 1 && lastKiss != -1)
+{
+if (isKiss(-1))
+{
+lastKiss = -1;
+}
+}
+}
+}
+
+// Determine if we need to close open trades based on support/resistance levels
+for (int i = 0; i < OrdersTotal(); i++)
+{
+if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+{
+if (OrderType() == OP_BUY || OrderType() == OP_SELL)
+{
+// Check if trade is in profit
+double currentProfit = OrderProfit() + OrderCommission() + OrderSwap();
+if (currentProfit > 0)
+{
+// Check if trade has moved beyond take profit threshold
+if (OrderType() == OP_BUY && Bid >= OrderTakeProfit() - TakeProfitInPips * Point)
+{
+OrderClose(OrderTicket(), OrderLots(), Bid, Slippage, Blue);
+}
+else if (OrderType() == OP_SELL && Ask <= OrderTakeProfit() + TakeProfitInPips * Point)
+{
+OrderClose(OrderTicket(), OrderLots(), Ask, Slippage, Red);
+}
+}
+else if (currentProfit < 0)
+{
+// Check
+// Update global variables
+lastTradeTime = TimeCurrent();
+
+// Add new trade to trend arrays
+if (trend == 1)
+{
+trendUp[lastKiss] = 1;
+trendDown[lastKiss] = 0;
+}
+else if (trend == -1)
+{
+trendUp[lastKiss] = 0;
+trendDown[lastKiss] = 1;
+}
+
+// Update support and resistance levels
+if (lastKiss >= 0)
+{
+if (trendUp[lastKiss] == 1)
+{
+if (Low[1] < support[lastKiss])
+{
+support[lastKiss] = Low[1];
+}
+if (High[1] > resistance[lastKiss])
+{
+resistance[lastKiss] = High[1];
+}
+}
+else if (trendDown[lastKiss] == 1)
+{
+if (Low[1] < resistance[lastKiss])
+{
+resistance[lastKiss] = Low[1];
+}
+if (High[1] > support[lastKiss])
+{
+support[lastKiss] = High[1];
+}
+}
+}
+
+// Check if there are open trades and update their stop loss and take profit
+for (int i = 0; i < OrdersTotal(); i++)
+{
+if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+{
+if (OrderType() == OP_BUY || OrderType() == OP_SELL)
+{
+double orderStopLoss = OrderStopLoss();
+double orderTakeProfit = OrderTakeProfit();
+if (orderStopLoss != 0 && orderTakeProfit != 0)
+{
+double newStopLoss = orderStopLoss;
+double newTakeProfit = orderTakeProfit;
+if (trend == 1)
+{
+if (OrderType() == OP_BUY && Low[1] < support[lastKiss])
+{
+newStopLoss = support[lastKiss] - StopLossInPips * Point;
+newTakeProfit = resistance[lastKiss] + TakeProfitInPips * Point;
+}
+}
+else if (trend == -1)
+{
+if (OrderType() == OP_SELL && High[1] > resistance[lastKiss])
+{
+newStopLoss = resistance[lastKiss] + StopLossInPips * Point;
+newTakeProfit = support[lastKiss] - TakeProfitInPips * Point;
+}
+}
+updateOrder(OrderTicket(), newStopLoss, newTakeProfit);
+}
+}
+}
+}
+
+// Reset trades opened counter at the end of the session
+if (TimeHour(TimeCurrent()) == 0 && TimeMinute(TimeCurrent()) == 0)
+{
+tradesOpened = 0;
+}
+}
+
+// EA init function
+void OnInit()
+{
+// Initialize global variables
+ArrayInitialize(trendUp, 0);
+ArrayInitialize(trendDown, 0);
+ArrayInitialize(support, 0.0);
+ArrayInitialize(resistance, 0.0);
+
+// Find last kiss of death/birth pattern
+for (int i = 2; i < Bars; i++)
+{
+if (isKiss(1))
+{
+lastKiss = i - 1;
+}
+else if (isKiss(-1))
+{
+lastKiss = i - 1;
+}
+}
+
+// Set stop loss and take profit for open trades based on last kiss pattern
+if (lastKiss >= 0)
+{
+for (int i = 0; i < OrdersTotal(); i++)
+{
+if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+{
+if (OrderType() == OP_BUY || OrderType() == OP_SELL)
+{
+double stopLoss
+// Update global variables
+lastTradeTime = TimeCurrent();
+
+// Update support and resistance levels
+if (trend == 1)
+{
+support[1] = support[0];
+support[0] = Low[1];
+if (lastKiss == -1)
+{
+lastKiss = Bars;
+}
+}
+else if (trend == -1)
+{
+resistance[1] = resistance[0];
+resistance[0] = High[1];
+if (lastKiss == -1)
+{
+lastKiss = Bars;
+}
+}
+
+// Check if we need to adjust stop loss and take profit of open trades
+if (hasTrade)
+{
+for (int i = 0; i < OrdersTotal(); i++)
+{
+if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+{
+if (OrderType() == OP_BUY)
+{
+// Check if stop loss needs to be adjusted
+if (Bid - OrderStopLoss() >= NewStopLoss * Point)
+{
+if (!updateOrder(OrderTicket(), OrderOpenPrice() - NewStopLoss * Point, OrderTakeProfit()))
+{
+Print("Failed to update order #", OrderTicket());
+}
+}
+// Check if take profit needs to be adjusted
+else if (OrderTakeProfit() - Bid >= NewTakeProfit * Point)
+{
+if (!updateOrder(OrderTicket(), OrderStopLoss(), OrderOpenPrice() + NewTakeProfit * Point))
+{
+Print("Failed to update order #", OrderTicket());
+}
+}
+}
+else if (OrderType() == OP_SELL)
+{
+// Check if stop loss needs to be adjusted
+if (OrderStopLoss() - Ask >= NewStopLoss * Point)
+{
+if (!updateOrder(OrderTicket(), OrderOpenPrice() + NewStopLoss * Point, OrderTakeProfit()))
+{
+Print("Failed to update order #", OrderTicket());
+}
+}
+// Check if take profit needs to be adjusted
+else if (Ask - OrderTakeProfit() >= NewTakeProfit * Point)
+{
+if (!updateOrder(OrderTicket(), OrderStopLoss(), OrderOpenPrice() - NewTakeProfit * Point))
+{
+Print("Failed to update order #", OrderTicket());
+}
+}
+}
+}
+}
+}
+
+// Close trades if necessary
+if (tradesOpened >= maxTradesPerSession)
+{
+for (int i = 0; i < OrdersTotal(); i++)
+{
+if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+{
+if (OrderType() == OP_BUY || OrderType() == OP_SELL)
+{
+if (!OrderClose(OrderTicket(), OrderLots(), Bid, Slippage, Red))
+{
+Print("Failed to close order #", OrderTicket());
+}
+}
+}
+}
+tradesOpened = 0;
+lastKiss = -1;
+}
+
+// Check for trailing stop loss
+for (int i = 0; i < OrdersTotal(); i++)
+{
+if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+{
+if (OrderType() == OP_BUY)
+{
+if (Bid - OrderOpenPrice() >= TakeProfitInPips * Point)
+{
+if (!updateOrder(OrderTicket(), OrderStopLoss() + TakeProfitInPips * Point, OrderTakeProfit() + TakeProfitInPips * Point))
+{
+Print("Failed to update order #", OrderTicket());
+}
+}
+}
+else if (OrderType() == OP_SELL)
+{
+if (OrderOpenPrice() - Ask >= TakeProfitInPips * Point)
+{
+if (!updateOrder(OrderTicket(), OrderStopLoss() - TakeProfitInPips * Point, OrderTakeProfit() - TakeProfitInPips * Point))
+{
+Print("Failed to update order #", OrderTicket());
+}
+// Set last trade time
+lastTradeTime = TimeCurrent();
+
+// Add entry price, stop loss, and take profit to trend array
+if (trend == 1)
+{
+trendUp[lastKiss] = entryPrice;
+support[lastKiss] = stopLoss;
+resistance[lastKiss] = takeProfit;
+}
+else if (trend == -1)
+{
+trendDown[lastKiss] = entryPrice;
+support[lastKiss] = takeProfit;
+resistance[lastKiss] = stopLoss;
+}
+
+// Set last kiss index to current bar
+lastKiss = 0;
+
+// Set trend direction for next kiss
+if (trend == 1)
+{
+trendDown[0] = trendDown[1];
+}
+else if (trend == -1)
+{
+trendUp[0] = trendUp[1];
+}
+
+// Update stop loss and take profit of open trades
+if (hasTrade && TimeCurrent() - lastTradeTime >= 30000)
+{
+for (int i = 0; i < OrdersTotal(); i++)
+{
+if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+{
+if (OrderType() == OP_BUY || OrderType() == OP_SELL)
+{
+if (OrderMagicNumber() == MagicNumber)
+{
+if (OrderStopLoss() != support[lastKiss] || OrderTakeProfit() != resistance[lastKiss])
+{
+updateOrder(OrderTicket(), support[lastKiss], resistance[lastKiss]);
+}
+}
+}
+}
+}
+}
+
+// Close open trades if kiss of death/birth pattern occurs
+for (int i = 0; i < OrdersTotal(); i++)
+{
+if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+{
+if (OrderType() == OP_BUY || OrderType() == OP_SELL)
+{
+if (OrderMagicNumber() == MagicNumber)
+{
+if ((OrderType() == OP_BUY && isKiss(-1)) || (OrderType() == OP_SELL && isKiss(1)))
+{
+bool result = OrderClose(OrderTicket(), OrderLots(), Bid, Slippage, Blue);
+if (result)
+{
+Print("Order closed successfully with ticket #", OrderTicket());
+tradesOpened--;
+}
+else
+{
+Print("OrderClose failed with error #", GetLastError());
+}
+}
+}
+}
+}
+}
+}
+
+// Custom function to draw support and resistance lines
+void drawSupportResistance()
+{
+// Draw support and resistance lines
+if (lastKiss >= 0)
+{
+// Draw support line
+ObjectDelete("Support");
+ObjectCreate("Support", OBJ_TREND, 0, Time[lastKiss], support[lastKiss], Time[0], support[0]);
+ObjectSet("Support", OBJPROP_COLOR, Green);
+ObjectSet("Support", OBJPROP_STYLE, STYLE_DASHDOT);
+
+// Draw resistance line
+ObjectDelete("Resistance");
+ObjectCreate("Resistance", OBJ_TREND, 0, Time[lastKiss], resistance[lastKiss], Time[0], resistance[0]);
+ObjectSet("Resistance", OBJPROP_COLOR, Red);
+ObjectSet("Resistance", OBJPROP_STYLE, STYLE_DASHDOT);
+}
+}
+
+// Custom function to draw trend line
+void drawTrend()
+{
+// Draw trend line
+if (lastKiss >= 0)
+{
+if (trendUp[lastKiss] != 0 && trendUp[0] != 0)
+{
+ObjectDelete("Trend");
+ObjectCreate("Trend", OBJ_TREND, 0, Time[lastKiss], trendUp[lastKiss], Time[0], trendUp[0]);
+ObjectSet("Trend", OBJ
